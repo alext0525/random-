@@ -5,40 +5,57 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>SpaceScan</title>
 <style>
-  :root { --bg:#14161a; --panel:#1d2026; --text:#e6e8eb; --muted:#8b93a0; --border:#2b3038; }
+  :root { --bg:#14161a; --panel:#1d2026; --text:#e6e8eb; --muted:#8b93a0; --border:#2b3038; --warn:#e0a84a; }
   * { box-sizing:border-box; }
   body { margin:0; font:14px system-ui,Segoe UI,sans-serif; background:var(--bg); color:var(--text);
          display:flex; flex-direction:column; height:100vh; }
-  header { display:flex; gap:8px; padding:10px 12px; background:var(--panel); border-bottom:1px solid var(--border); align-items:center; flex-wrap:wrap; }
-  input { flex:1; min-width:200px; padding:7px 10px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; }
+  header { display:flex; gap:8px; padding:10px 12px 6px; background:var(--panel); align-items:center; flex-wrap:wrap; }
+  #opts { display:flex; gap:16px; padding:0 12px 8px; background:var(--panel); border-bottom:1px solid var(--border); flex-wrap:wrap; color:var(--muted); }
+  #opts label { cursor:pointer; display:flex; gap:6px; align-items:center; }
+  input[type=text] { flex:1; min-width:200px; padding:7px 10px; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:6px; }
   button, select { padding:7px 12px; background:#3b6fd4; color:#fff; border:0; border-radius:6px; cursor:pointer; }
+  button.sec { background:#2f343d; }
   select { background:var(--bg); color:var(--text); border:1px solid var(--border); }
-  button:disabled { opacity:.5; cursor:default; }
-  #bar { display:flex; gap:6px; padding:8px 12px; color:var(--muted); flex-wrap:wrap; align-items:center; }
+  button[hidden] { display:none; }
+  #info { padding:6px 12px 0; color:var(--muted); min-height:24px; }
+  #info .warn { color:var(--warn); }
+  #bar { display:flex; gap:6px; padding:6px 12px 8px; color:var(--muted); flex-wrap:wrap; align-items:center; }
   #bar a { color:#7aa2f7; cursor:pointer; }
   #bar .total { margin-left:auto; color:var(--text); }
   main { flex:1; display:flex; min-height:0; }
   #map { flex:1; position:relative; margin:0 0 12px 12px; background:#000; border-radius:6px; overflow:hidden; }
-  #side { width:300px; margin:0 12px 12px; overflow:auto; background:var(--panel); border-radius:6px; }
+  #side { width:320px; margin:0 12px 12px; overflow:auto; background:var(--panel); border-radius:6px; }
   .tile { position:absolute; border:1px solid #0009; overflow:hidden; cursor:pointer; padding:3px 5px; font-size:12px; color:#fff; text-shadow:0 1px 2px #000a; line-height:1.25; }
+  .tile.nc { cursor:default; }
   .tile:hover { outline:2px solid #fff; z-index:5; }
   .tile b { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .tile span { opacity:.85; }
   .row { display:flex; gap:8px; padding:6px 10px; border-bottom:1px solid var(--border); cursor:pointer; align-items:center; }
+  .row.nc { cursor:default; }
   .row:hover { background:#262a32; }
   .row .n { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .row .s { color:var(--muted); white-space:nowrap; }
+  .row .s { color:var(--muted); white-space:nowrap; text-align:right; }
+  .row .s i { display:block; font-style:normal; font-size:12px; }
+  .row.cloudonly { opacity:.6; }
   .dot { width:10px; height:10px; border-radius:2px; flex:none; }
   #msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); text-align:center; padding:20px; }
+  .hatch { background-image:repeating-linear-gradient(45deg,#ffffff40 0 4px,transparent 4px 8px); }
   @media (max-width:800px){ main{flex-direction:column} #side{width:auto;margin:0 12px 12px;max-height:35vh} #map{margin:0 12px 12px} }
 </style>
 </head>
 <body>
 <header>
   <select id="drives"></select>
-  <input id="path" placeholder="Folder to scan, e.g. C:\Users\you">
+  <input type="text" id="path" placeholder="Folder to scan, e.g. C:\Users\you">
   <button id="scan">Scan</button>
+  <button id="rescan" class="sec" hidden>Rescan</button>
+  <button id="stop" class="sec" hidden>Stop</button>
 </header>
+<div id="opts">
+  <label title="Also count hidden and system files/folders"><input type="checkbox" id="optHidden"> Show hidden &amp; system items</label>
+  <label title="OneDrive 'online-only' files are in the cloud and don't use disk space. Tick to include them in the map (shown hatched)."><input type="checkbox" id="optCloud"> Include cloud-only files (not using disk space)</label>
+</div>
+<div id="info"></div>
 <div id="bar"></div>
 <main>
   <div id="map"><div id="msg">Pick a drive or paste a folder path, then press Scan.</div></div>
@@ -47,68 +64,110 @@
 <script>
 const $ = id => document.getElementById(id);
 const fmt = b => { const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1024&&i<4){b/=1024;i++;} return b.toFixed(i?1:0)+' '+u[i]; };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const COLORS = ['#3b6fd4','#2a9d8f','#c9793a','#8e5bd0','#c2456b','#5c9c3a','#b8a12e','#3e8fb0'];
-let current = null, crumbs = [];
+let scanKey = null, curPath = null, crumbs = [], current = null, status = null, timer = null;
+
+const store = { get(k){ try{return localStorage.getItem(k)}catch(e){return null} }, set(k,v){ try{localStorage.setItem(k,v)}catch(e){} } };
+$('optHidden').checked = store.get('hidden') === '1';
+$('optCloud').checked = store.get('cloud') === '1';
+$('optHidden').onchange = () => { store.set('hidden', $('optHidden').checked?'1':'0'); load(); };
+$('optCloud').onchange = () => { store.set('cloud', $('optCloud').checked?'1':'0'); load(); };
 
 async function api(u){ const r = await fetch(u); return r.json(); }
+const q = () => `scan=${encodeURIComponent(scanKey)}&hidden=${+$('optHidden').checked}&cloud=${+$('optCloud').checked}`;
 
 async function init(){
   const d = await api('/api/drives');
-  $('drives').innerHTML = '<option value="">Drives…</option>' + d.drives.map(x=>`<option>${x}</option>`).join('');
+  $('drives').innerHTML = '<option value="">Drives…</option>' + d.drives.map(x=>`<option>${esc(x)}</option>`).join('');
   $('path').value = d.home;
   $('drives').onchange = e => { if(e.target.value) $('path').value = e.target.value; };
 }
 
-$('scan').onclick = async () => {
+async function startScan(force){
   const p = $('path').value.trim(); if(!p) return;
-  const r = await api('/api/scan?path='+encodeURIComponent(p));
-  if(r.error){ $('map').innerHTML = `<div id="msg">${r.error}</div>`; return; }
-  $('scan').disabled = true;
-  $('map').innerHTML = '<div id="msg">Scanning…</div>';
-  const t = setInterval(async () => {
-    const s = await api('/api/status');
-    if(s.running){ $('msg') && ($('msg').textContent = `Scanning… ${s.files.toLocaleString()} files`); return; }
-    clearInterval(t); $('scan').disabled = false;
-    crumbs = []; open(p);
-  }, 500);
-};
+  const r = await api(`/api/scan?path=${encodeURIComponent(p)}&force=${force?1:0}`);
+  if(r.error){ $('map').innerHTML = `<div id="msg">${esc(r.error)}</div>`; return; }
+  scanKey = r.scan; curPath = r.scan; crumbs = [];
+  clearInterval(timer);
+  await tick();
+  timer = setInterval(tick, 1000);
+}
+$('scan').onclick = () => startScan(false);
+$('rescan').onclick = () => startScan(true);
+$('stop').onclick = () => api('/api/stop?scan='+encodeURIComponent(scanKey));
 
-async function open(path){
-  const n = await api('/api/node?path='+encodeURIComponent(path));
-  if(n.error) return;
+async function tick(){
+  status = await api('/api/status?scan='+encodeURIComponent(scanKey));
+  if(status.error) return;
+  await load();
+  if(!status.running) clearInterval(timer);
+  renderInfo();
+}
+
+function ago(s){
+  const m = Math.round(s/60);
+  return s < 60 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.round(m/60)} h ago`;
+}
+
+function renderInfo(){
+  const s = status; if(!s) return;
+  $('scan').hidden = false; $('rescan').hidden = s.running; $('stop').hidden = !s.running;
+  let t = '';
+  if(s.running) t = `Scanning… ${s.files.toLocaleString()} files · results update live`;
+  else if(s.stopped) t = 'Stopped – partial results shown. Press Rescan to redo.';
+  else t = `Scan finished ${ago(s.now - s.finished)} (saved – pressing Scan again reopens it instantly; Rescan for fresh data).`;
+  if(s.denied) t += ` <span class="warn" title="Typically Windows system folders. Their size is not counted.">⚠ ${s.denied.toLocaleString()} folders could not be read (no access)</span>`;
+  if(s.disk) t += ` · Drive: ${fmt(s.disk.used)} used of ${fmt(s.disk.total)}`;
+  $('info').innerHTML = t;
+}
+
+async function load(){
+  if(!scanKey) return;
+  let n = await api(`/api/node?${q()}&path=${encodeURIComponent(curPath)}`);
+  if(n.error){ curPath = scanKey; crumbs = []; n = await api(`/api/node?${q()}&path=${encodeURIComponent(curPath)}`); if(n.error) return; }
   current = n;
-  const i = crumbs.findIndex(c => c.path === path);
-  if(i >= 0) crumbs = crumbs.slice(0, i+1); else crumbs.push({path, name:n.name});
+  const i = crumbs.findIndex(c => c.path === curPath);
+  if(i >= 0) crumbs = crumbs.slice(0, i+1); else crumbs.push({path:curPath, name:n.name});
   render();
 }
+function go(path){ curPath = path; load(); }
 
 function render(){
-  const n = current;
-  $('bar').innerHTML = crumbs.map((c,i)=>`<a data-p="${encodeURIComponent(c.path)}">${c.name}</a>`).join(' › ')
-    + `<span class="total">${fmt(n.size)} · ${n.count.toLocaleString()} files</span>`;
-  document.querySelectorAll('#bar a').forEach(a => a.onclick = () => open(decodeURIComponent(a.dataset.p)));
-  const kids = n.children.filter(c => c.size > 0);
-  $('side').innerHTML = kids.map((c,i)=>`<div class="row" data-i="${i}"><span class="dot" style="background:${COLORS[i%COLORS.length]}"></span>
-    <span class="n" title="${c.path||''}">${c.dir?'📁 ':''}${esc(c.name)}</span><span class="s">${fmt(c.size)} · ${(c.size/n.size*100).toFixed(1)}%</span></div>`).join('') || '<div class="row">Empty</div>';
-  document.querySelectorAll('.row[data-i]').forEach(r => r.onclick = () => { const c = kids[r.dataset.i]; if(c.dir) open(c.path); });
-  drawMap(kids);
+  const n = current, sc = $('optCloud').checked;
+  $('bar').innerHTML = crumbs.map(c=>`<a data-p="${encodeURIComponent(c.path)}">${esc(c.name)}</a>`).join(' › ')
+    + `<span class="total">${fmt(n.size)}${n.cloud ? (sc ? ` (incl. ☁ ${fmt(n.cloud)} cloud-only)` : ` on disk · ☁ ${fmt(n.cloud)} cloud-only, not using space`) : sc ? '' : ' on disk'}</span>`;
+  document.querySelectorAll('#bar a').forEach(a => a.onclick = () => go(decodeURIComponent(a.dataset.p)));
+  const kids = n.children, total = kids.reduce((a,c)=>a+c.size,0) || 1;
+  $('side').innerHTML = kids.map((c,i)=>{
+    const only = c.size === 0 && c.cloud > 0;
+    const sub = c.cloud && !only && !sc ? `<i>☁ +${fmt(c.cloud)} in cloud</i>` : only ? `<i>☁ ${fmt(c.cloud)} cloud-only</i>` : c.size === 0 ? '<i>no access / empty</i>' : sc && c.cloud ? `<i>☁ ${fmt(c.cloud)} of it in cloud</i>` : '';
+    const warn = c.denied ? `<span title="${c.denied} folders inside could not be read">⚠</span> ` : '';
+    return `<div class="row${c.special||!c.dir?' nc':''}${only?' cloudonly':''}" data-i="${i}"><span class="dot" style="background:${c.special?'#555':COLORS[i%COLORS.length]}"></span>
+    <span class="n" title="${esc(c.path||c.name)}">${c.dir?'📁 ':''}${warn}${esc(c.name)}${c.busy?' …':''}</span>
+    <span class="s">${c.size===0?'0 B':fmt(c.size)+' · '+(c.size/total*100).toFixed(1)+'%'}${sub}</span></div>`; }).join('') || '<div class="row nc">Nothing here yet.</div>';
+  document.querySelectorAll('.row[data-i]').forEach(r => r.onclick = () => { const c = kids[r.dataset.i]; if(c.dir) go(c.path); });
+  drawMap(kids.filter(c => c.size > 0), kids);
 }
 
-const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-
-function drawMap(kids){
+function drawMap(items, all){
   const el = $('map'); el.innerHTML = '';
-  if(!kids.length){ el.innerHTML = '<div id="msg">Nothing here.</div>'; return; }
-  const W = el.clientWidth, H = el.clientHeight, total = kids.reduce((a,c)=>a+c.size,0);
-  const items = kids.map((c,i)=>({c,i,a:c.size/total*W*H}));
-  squarify(items, {x:0,y:0,w:W,h:H}).forEach(r => {
-    const {c,i} = r.item, d = document.createElement('div');
-    d.className = 'tile';
-    Object.assign(d.style, {left:r.x+'px',top:r.y+'px',width:r.w+'px',height:r.h+'px',
-      background: c.dir ? COLORS[i%COLORS.length] : shade(COLORS[i%COLORS.length])});
-    d.title = `${c.path||c.name}\n${fmt(c.size)}`;
-    if(r.w>50 && r.h>28) d.innerHTML = `<b>${esc(c.name)}</b><span>${fmt(c.size)}</span>`;
-    if(c.dir) d.onclick = () => open(c.path);
+  if(!items.length){ el.innerHTML = `<div id="msg">${status && status.running ? 'Scanning…' : 'Nothing here.'}</div>`; return; }
+  const W = el.clientWidth, H = el.clientHeight, total = items.reduce((a,c)=>a+c.size,0);
+  squarify(items.map(c=>({c,a:c.size/total*W*H})), {x:0,y:0,w:W,h:H}).forEach(r => {
+    const c = r.item.c, i = all.indexOf(c), col = COLORS[i%COLORS.length], d = document.createElement('div');
+    d.className = 'tile' + (c.special || !c.dir ? ' nc' : '');
+    const base = c.special ? '#3a3d44' : c.dir ? col : shade(col);
+    Object.assign(d.style, {left:r.x+'px',top:r.y+'px',width:r.w+'px',height:r.h+'px',background:base});
+    if(c.special) d.classList.add('hatch');
+    if($('optCloud').checked && c.cloud && c.size){   // hatched part = share that lives in the cloud
+      d.style.backgroundImage = 'repeating-linear-gradient(45deg,#ffffff50 0 4px,transparent 4px 8px)';
+      d.style.backgroundSize = (c.cloud/c.size*100)+'% 100%';
+      d.style.backgroundPosition = 'right'; d.style.backgroundRepeat = 'no-repeat';
+    }
+    d.title = `${c.path||c.name}\n${fmt(c.size)}` + (c.cloud ? `\n☁ ${fmt(c.cloud)} cloud-only` : '') + (c.denied ? `\n⚠ ${c.denied} folders unreadable` : '');
+    if(r.w>50 && r.h>28) d.innerHTML = `<b>${esc(c.name)}</b><span>${fmt(c.size)}${c.cloud&&$('optCloud').checked?' ☁':''}</span>`;
+    if(c.dir) d.onclick = () => go(c.path);
     el.appendChild(d);
   });
 }
@@ -130,6 +189,9 @@ function squarify(items, rect){
   return out;
 }
 
+setInterval(() => fetch('/api/ping').catch(()=>{}), 3000);
+fetch('/api/ping').catch(()=>{});
+window.addEventListener('pagehide', () => navigator.sendBeacon('/api/bye'));
 window.addEventListener('resize', () => current && render());
 init();
 </script>

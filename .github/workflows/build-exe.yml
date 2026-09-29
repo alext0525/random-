@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pyinstaller
-      - run: pyinstaller --onefile --name SpaceScan --add-data "index.html;." spacescan.py
+      - run: pyinstaller --onefile --noconsole --name SpaceScan --add-data "index.html;." spacescan.py
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
