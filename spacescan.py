@@ -107,7 +107,8 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         q = parse_qs(url.query)
         if url.path == "/":
-            page = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+            base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+            page = os.path.join(base, "index.html")
             with open(page, "rb") as f:
                 body = f.read()
             self.send_response(200)
@@ -148,10 +149,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else PORT
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    port = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else PORT
+    while True:
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            break
+        except OSError:
+            port += 1
     url = f"http://127.0.0.1:{port}/"
-    print(f"SpaceScan running at {url}  (Ctrl+C to stop)")
+    print(f"SpaceScan is running at {url}")
+    print("Your browser should open. Close this window to quit SpaceScan.")
     if "--no-browser" not in sys.argv:
         webbrowser.open(url)
     try:
