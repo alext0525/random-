@@ -42,22 +42,21 @@ You can then ask follow-up questions in the same window.
 ## Use it (Windows)
 
 1. Download `CrashDoctor.exe` from https://github.com/alext0525/random-/releases/tag/crashdoctor-latest
-2. Double-click it after the crash (once you've rebooted).
-3. Confirm the crash it found and how many minutes of logs to send (default 30).
-4. First run asks for an Anthropic API key (https://console.anthropic.com/settings/keys) and can save it
-   to `%APPDATA%\CrashDoctor\api_key.txt`. Or set `ANTHROPIC_API_KEY`.
+2. Double-click it after the crash (once you've rebooted). No window appears; your browser opens with the app.
+3. It shows the crash it found (or pick "something just happened" / a time) and how far back to look (default 10 min).
+4. First time: paste an Anthropic API key (https://console.anthropic.com/settings/keys). "Remember on this PC"
+   saves it to `%APPDATA%\CrashDoctor\api_key.txt`. Or set `ANTHROPIC_API_KEY`.
+5. Press **Diagnose**. Claude's answer streams in; ask follow-ups underneath. Close the tab to quit.
 
-If there was no reboot (e.g. an app crashed or the PC froze and recovered), it uses the logs up to now.
 Run it as administrator to also list crash dump files.
 
 ## What gets sent
 
 System + Application errors/warnings, thermal and low-memory logs, all System events from the last
 5 minutes before the crash, the shutdown/blue-screen records, crash dump file names, and nearby Windows
-Error Reporting reports. Everything is saved to `%USERPROFILE%\CrashDoctor\crash-<time>.md` first
-(with Claude's diagnosis appended), so you can see exactly what was sent. `--dry-run` collects without sending.
+Error Reporting reports. Everything is saved to `%USERPROFILE%\CrashDoctor\crash-<time>.md` (with Claude's
+diagnosis appended), and you can expand "Logs that were sent" in the app to see exactly what went out.
 
 ## From source
 
-`pip install anthropic`, then `python crashdoctor.py`. Options: `--minutes 60`, `--now` (skip crash
-detection), `--end "2026-10-05 22:15"`, `--days 14`, `--dry-run`, `--yes` (no prompts).
+`pip install anthropic`, then `python crashdoctor.py` (`--no-browser` skips opening the browser).

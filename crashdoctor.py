@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """CrashDoctor: grab Windows event logs from before your last crash and ask Claude why it happened.
 
-Run: python crashdoctor.py            (interactive)
-     python crashdoctor.py --minutes 60 --now --dry-run
+Run: python crashdoctor.py   (opens in your browser; close the tab to quit)
 """
-import argparse
-import getpass
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import webbrowser
 from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
 
 MODEL = "claude-opus-5-5"
+PORT = 8775
+BYE_GRACE = 6      # tab said goodbye and nothing came back (a refresh pings again at once)
+IDLE_LIMIT = 180   # no ping at all
 APP_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "CrashDoctor")
 KEY_FILE = os.path.join(APP_DIR, "api_key.txt")
 REPORT_DIR = os.path.join(os.path.expanduser("~"), "CrashDoctor")
@@ -109,19 +114,19 @@ run WinDbg !analyze -v on a dump)."""
 def run_ps(script):
     """Run a PowerShell script and parse its JSON output."""
     if os.name != "nt":
-        sys.exit("CrashDoctor reads Windows event logs, so it has to run on Windows.")
+        raise RuntimeError("CrashDoctor reads Windows event logs, so it has to run on Windows.")
     fd, path = tempfile.mkstemp(suffix=".ps1")
     try:
         with os.fdopen(fd, "w", encoding="utf-8-sig") as f:
             f.write(script)
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path],
-            capture_output=True, timeout=600)
+            capture_output=True, timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     finally:
         os.remove(path)
     text = r.stdout.decode("utf-8", "replace").strip()
     if not text:
-        sys.exit("PowerShell returned nothing:\n" + r.stderr.decode("utf-8", "replace"))
+        raise RuntimeError("PowerShell returned nothing: " + r.stderr.decode("utf-8", "replace")[:500])
     return json.loads(text)
 
 
@@ -201,153 +206,247 @@ def build_report(info, crash, start, end):
     return "\n".join(lines)
 
 
-def get_api_key():
+def saved_key():
     key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
         return key
     try:
         with open(KEY_FILE, encoding="utf-8") as f:
-            key = f.read().strip()
-        if key:
-            return key
+            return f.read().strip() or None
     except OSError:
-        pass
-    print("\nNeeds an Anthropic API key (get one at https://console.anthropic.com/settings/keys).")
-    key = getpass.getpass("Paste API key (hidden): ").strip()
-    if not key:
-        sys.exit("No key given.")
-    if ask("Save it for next time?", True):
-        os.makedirs(APP_DIR, exist_ok=True)
-        with open(KEY_FILE, "w", encoding="utf-8") as f:
-            f.write(key)
-        print(f"Saved to {KEY_FILE}")
-    return key
+        return None
 
 
-def ask(q, default=True):
-    a = input(f"{q} [{'Y/n' if default else 'y/N'}] ").strip().lower()
-    return default if not a else a.startswith("y")
+def save_key(key):
+    os.makedirs(APP_DIR, exist_ok=True)
+    with open(KEY_FILE, "w", encoding="utf-8") as f:
+        f.write(key)
 
 
-def ask_claude(client, messages, model):
-    """Stream one reply to the console and return the final message."""
-    import anthropic
+class Session:
+    """One diagnosis: collected logs plus the conversation with Claude."""
+
+    def __init__(self):
+        self.state = "collecting"   # collecting | asking | done | error
+        self.error = None
+        self.turns = []             # [{"role": "user"|"assistant", "text": str}]
+        self.partial = ""
+        self.report = ""
+        self.path = None
+        self.messages = []          # API messages, assistant turns kept as full content blocks
+        self.lock = threading.Lock()
+
+    def view(self):
+        with self.lock:
+            return {"state": self.state, "error": self.error, "turns": self.turns, "partial": self.partial,
+                    "report": self.report, "path": self.path}
+
+
+state = {"session": None, "key": None}
+lifecycle = {"ping": None, "bye": None, "start": time.time()}
+
+
+def run_session(s, end, minutes, crash):
     try:
+        start = end - timedelta(minutes=minutes)
+        report = build_report(collect(start, end), crash, start, end)
+        os.makedirs(REPORT_DIR, exist_ok=True)
+        path = os.path.join(REPORT_DIR, f"crash-{end:%Y%m%d-%H%M%S}.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(report + "\n\n---\n# Claude's diagnosis\n\n")
+        with s.lock:
+            s.report, s.path = report, path
+            s.messages = [{"role": "user", "content": "My Windows laptop crashed. Why? Here are the logs:\n\n" + report}]
+        ask_claude(s)
+    except Exception as e:  # shown in the page
+        with s.lock:
+            s.state, s.error = "error", str(e)
+
+
+def ask_claude(s):
+    """Stream one reply into the session."""
+    import anthropic
+    with s.lock:
+        s.state, s.partial = "asking", ""
+    try:
+        client = anthropic.Anthropic(api_key=state["key"])
         with client.beta.messages.stream(
-            model=model,
+            model=MODEL,
             max_tokens=32000,
             system=SYSTEM_PROMPT,
-            messages=messages,
+            messages=s.messages,
             thinking={"type": "adaptive"},
             output_config={"effort": "high"},
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",  # retry on another model if the request is declined
         ) as stream:
             for text in stream.text_stream:
-                print(text, end="", flush=True)
+                with s.lock:
+                    s.partial += text
             msg = stream.get_final_message()
     except anthropic.AuthenticationError:
-        sys.exit(f"\nThe API key was rejected. Fix it in {KEY_FILE} or ANTHROPIC_API_KEY.")
+        return fail(s, "The API key was rejected. Enter a valid key and try again.", key=True)
     except anthropic.RateLimitError:
-        sys.exit("\nRate limited by the API. Try again in a minute.")
+        return fail(s, "Rate limited by the API. Try again in a minute.")
     except anthropic.APIStatusError as e:
-        sys.exit(f"\nAPI error {e.status_code}: {e.message}")
+        return fail(s, f"API error {e.status_code}: {e.message}")
     except anthropic.APIConnectionError:
-        sys.exit("\nCouldn't reach the Anthropic API. Check your internet connection.")
-    print()
+        return fail(s, "Couldn't reach the Anthropic API. Check your internet connection.")
+    reply = "".join(b.text for b in msg.content if b.type == "text")
     if msg.stop_reason == "refusal":
-        print("(Claude declined to answer this one.)")
-    return msg
+        reply += "\n\n_(Claude declined to answer this one.)_"
+    with open(s.path, "a", encoding="utf-8") as f:
+        f.write(reply + "\n")
+    with s.lock:
+        s.messages.append({"role": "assistant", "content": msg.content})
+        s.turns.append({"role": "assistant", "text": reply})
+        s.partial, s.state = "", "done"
+
+
+def fail(s, message, key=False):
+    if key:
+        state["key"] = None
+    with s.lock:
+        s.state, s.error, s.partial = "error", message, ""
+        if s.messages and s.messages[-1]["role"] == "user" and len(s.messages) > 1:
+            s.messages.pop()  # let the follow-up be asked again
+            s.turns.pop()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def send_json(self, obj, code=200):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            return json.loads(self.rfile.read(n) or b"{}")
+        except ValueError:
+            return {}
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path == "/":
+            base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+            with open(os.path.join(base, "crashdoctor.html"), "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path == "/api/detect":
+            try:
+                d = detect_crash(7)
+            except Exception as e:
+                return self.send_json({"error": str(e), "has_key": bool(state["key"])})
+            d["has_key"] = bool(state["key"])
+            self.send_json(d)
+        elif path == "/api/session":
+            s = state["session"]
+            self.send_json(s.view() if s else {"state": None})
+        elif path == "/api/open-folder":
+            os.makedirs(REPORT_DIR, exist_ok=True)
+            if hasattr(os, "startfile"):
+                os.startfile(REPORT_DIR)
+            self.send_json({"ok": True})
+        elif path == "/api/ping":
+            lifecycle["ping"] = time.time()
+            lifecycle["bye"] = None
+            self.send_json({"ok": True})
+        elif path == "/api/bye":
+            lifecycle["bye"] = time.time()
+            self.send_json({"ok": True})
+        else:
+            self.send_json({"error": "Not found"}, 404)
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/api/bye":
+            return self.do_GET()
+        b = self.body()
+        s = state["session"]
+        if path == "/api/key":
+            key = (b.get("key") or "").strip()
+            if not key:
+                return self.send_json({"error": "Paste your API key first."}, 400)
+            state["key"] = key
+            if b.get("remember"):
+                save_key(key)
+            self.send_json({"ok": True})
+        elif path == "/api/analyze":
+            if not state["key"]:
+                return self.send_json({"error": "Enter your API key first."}, 400)
+            if s and s.state in ("collecting", "asking"):
+                return self.send_json({"error": "Already working on one."}, 409)
+            try:
+                end = datetime.strptime(b["end"][:16], "%Y-%m-%dT%H:%M") if b.get("end") else datetime.now()
+                minutes = max(1, min(int(b.get("minutes") or 10), 24 * 60))
+            except (ValueError, TypeError):
+                return self.send_json({"error": "Bad time or minutes."}, 400)
+            if b.get("crash"):  # the detected crash: keep its exact second
+                end = datetime.strptime(b["crash"]["end"], TS_FMT)
+            s = state["session"] = Session()
+            threading.Thread(target=run_session, args=(s, end, minutes, b.get("crash")), daemon=True).start()
+            self.send_json({"ok": True})
+        elif path == "/api/ask":
+            q = (b.get("q") or "").strip()
+            ready = s and s.state in ("done", "error") and s.messages and s.messages[-1]["role"] == "assistant"
+            if not ready or not q:
+                return self.send_json({"error": "Nothing to ask about yet."}, 400)
+            if not state["key"]:
+                return self.send_json({"error": "Enter your API key first (New diagnosis)."}, 400)
+            with s.lock:
+                s.messages.append({"role": "user", "content": q})
+                s.turns.append({"role": "user", "text": q})
+                s.error = None
+            with open(s.path, "a", encoding="utf-8") as f:
+                f.write(f"\n## Q: {q}\n\n")
+            threading.Thread(target=ask_claude, args=(s,), daemon=True).start()
+            self.send_json({"ok": True})
+        else:
+            self.send_json({"error": "Not found"}, 404)
+
+
+def watchdog():
+    while True:
+        time.sleep(1)
+        now = time.time()
+        last = lifecycle["ping"] or lifecycle["start"]
+        bye = lifecycle["bye"]
+        busy = state["session"] and state["session"].state in ("collecting", "asking")
+        if not busy and ((bye and now - bye > BYE_GRACE) or now - last > IDLE_LIMIT):
+            os._exit(0)
 
 
 def main():
-    p = argparse.ArgumentParser(description="Send the logs from before your last crash to Claude.")
-    p.add_argument("--minutes", type=int, help="how much log history to send (default 30)")
-    p.add_argument("--now", action="store_true", help="use the window ending now (skip crash detection)")
-    p.add_argument("--end", help='custom window end, e.g. "2026-10-05 22:15"')
-    p.add_argument("--days", type=int, default=7, help="how far back to look for a crash (default 7)")
-    p.add_argument("--dry-run", action="store_true", help="collect and save logs only, don't send")
-    p.add_argument("--model", default=MODEL)
-    p.add_argument("--yes", action="store_true", help="don't ask questions")
-    a = p.parse_args()
-    interactive = not a.yes and sys.stdin.isatty()
-
-    print("CrashDoctor - finding out why your PC crashed\n")
-    crash = None
-    if a.end:
-        end = datetime.strptime(a.end.replace("T", " "), "%Y-%m-%d %H:%M")
-    elif a.now:
-        end = datetime.now()
-    else:
-        print(f"Looking for an unexpected shutdown in the last {a.days} days...")
-        d = detect_crash(a.days)
-        end = datetime.strptime(d["now"], TS_FMT)
-        crash = d.get("crash")
-        if crash:
-            print(f"Found one: last log entry around {crash['end'].replace('T', ' ')}, "
-                  f"rebooted at {crash['reboot'].replace('T', ' ')}.")
-            if not interactive or ask("Analyze that crash?", True):
-                end = datetime.strptime(crash["end"], TS_FMT)
-            else:
-                crash = None
-                print("OK, using the logs up to now instead.")
-        else:
-            print("No unexpected shutdown found, so using the logs up to now "
-                  "(good for freezes or app crashes without a reboot).")
-
-    minutes = a.minutes
-    if minutes is None:
-        minutes = 30
-        if interactive:
-            v = input("How many minutes of logs before that? [30] ").strip()
-            minutes = int(v) if v.isdigit() and int(v) > 0 else 30
-    start = end - timedelta(minutes=minutes)
-
-    print(f"Collecting logs from {start:%H:%M:%S} to {end:%H:%M:%S}...")
-    report = build_report(collect(start, end), crash, start, end)
-    os.makedirs(REPORT_DIR, exist_ok=True)
-    path = os.path.join(REPORT_DIR, f"crash-{end:%Y%m%d-%H%M%S}.md")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(report)
-    print(f"Saved the collected logs to {path} ({len(report) // 1000} KB).")
-    if a.dry_run:
-        return
-    if interactive and not ask("Send them to Claude for analysis?", True):
-        return
-
-    import anthropic
-    client = anthropic.Anthropic(api_key=get_api_key())
-    messages = [{"role": "user", "content": "My Windows laptop crashed. Why? Here are the logs:\n\n" + report}]
-    print(f"\nAsking Claude ({a.model})... this can take a minute.\n")
-    with open(path, "a", encoding="utf-8") as log:
-        log.write("\n\n---\n# Claude's diagnosis\n\n")
-        while True:
-            msg = ask_claude(client, messages, a.model)
-            reply = "".join(b.text for b in msg.content if b.type == "text")
-            log.write(reply + "\n")
-            log.flush()
-            messages.append({"role": "assistant", "content": msg.content})
-            if not interactive:
-                break
-            q = input("\nFollow-up question (Enter to quit): ").strip()
-            if not q:
-                break
-            log.write(f"\n## Q: {q}\n\n")
-            messages.append({"role": "user", "content": q})
-            print()
-    print(f"\nDiagnosis saved to {path}")
+    state["key"] = saved_key()
+    port = PORT
+    while True:
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            break
+        except OSError:
+            port += 1
+    url = f"http://127.0.0.1:{port}/"
+    print(f"CrashDoctor is running at {url} - close the browser tab to quit.")
+    if "--no-browser" not in sys.argv:
+        webbrowser.open(url)
+    if "--no-exit" not in sys.argv:
+        threading.Thread(target=watchdog, daemon=True).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print()
-    except SystemExit as e:
-        if e.code not in (None, 0):
-            print(e.code)
-    if getattr(sys, "frozen", False) and sys.stdin.isatty():  # double-clicked exe: keep the window open
-        try:
-            input("\nPress Enter to close.")
-        except EOFError:
-            pass
+    main()
