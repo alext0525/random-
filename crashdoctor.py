@@ -346,5 +346,8 @@ if __name__ == "__main__":
     except SystemExit as e:
         if e.code not in (None, 0):
             print(e.code)
-    if getattr(sys, "frozen", False):  # double-clicked exe: keep the window open
-        input("\nPress Enter to close.")
+    if getattr(sys, "frozen", False) and sys.stdin.isatty():  # double-clicked exe: keep the window open
+        try:
+            input("\nPress Enter to close.")
+        except EOFError:
+            pass
