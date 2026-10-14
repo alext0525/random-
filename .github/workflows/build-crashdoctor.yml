@@ -2,7 +2,7 @@ name: Build CrashDoctor exe
 on:
   push:
     branches: [claude/dazzling-edison-pf5euw]
-    paths: [crashdoctor.py, crashdoctor.html, .github/workflows/build-crashdoctor.yml]
+    paths: [crashdoctor.py, crashdoctor.html, assets/crashdoctor.ico, .github/workflows/build-crashdoctor.yml]
   workflow_dispatch:
 permissions:
   contents: write
@@ -16,7 +16,7 @@ jobs:
           python-version: "3.12"
       - run: pip install pyinstaller anthropic
       - run: python -c "import crashdoctor"
-      - run: pyinstaller --onefile --noconsole --collect-submodules anthropic --add-data "crashdoctor.html;." --name CrashDoctor crashdoctor.py
+      - run: pyinstaller --onefile --noconsole --icon assets/crashdoctor.ico --collect-submodules anthropic --add-data "crashdoctor.html;." --name CrashDoctor crashdoctor.py
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: crashdoctor-latest

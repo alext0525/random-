@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>CrashDoctor</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNTYgMjU2Ij4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iYmciIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjNmY5YmZmIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzNhNGZkNiIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICA8L2RlZnM+CiAgPHJlY3QgeD0iOCIgeT0iOCIgd2lkdGg9IjI0MCIgaGVpZ2h0PSIyNDAiIHJ4PSI1NiIgZmlsbD0idXJsKCNiZykiLz4KICA8cmVjdCB4PSI0NCIgeT0iNjIiIHdpZHRoPSIxNjgiIGhlaWdodD0iMTEyIiByeD0iMTQiIGZpbGw9IiMxMDFhM2MiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxMiIvPgogIDxwYXRoIGQ9Ik0zMCAxOTYgSDIyNiIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjE0IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8cGF0aCBkPSJNNTggMTIyIEg5MiBMMTA2IDk0IEwxMjYgMTUyIEwxNDIgMTA4IEwxNTIgMTIyIEgxOTgiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzVjZjJhNCIKICAgICAgICBzdHJva2Utd2lkdGg9IjEzIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+Cg==">
 <style>
   :root { --bg:#111317; --panel:#1a1d23; --panel2:#22262e; --text:#e6e8eb; --muted:#8b93a0; --border:#2b3038;
           --accent:#5b8def; --ok:#4fbf7f; --warn:#e0a84a; --bad:#e5615b; }
@@ -70,7 +71,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>🩺 CrashDoctor</h1>
+  <h1><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNTYgMjU2Ij4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iYmciIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjNmY5YmZmIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzNhNGZkNiIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICA8L2RlZnM+CiAgPHJlY3QgeD0iOCIgeT0iOCIgd2lkdGg9IjI0MCIgaGVpZ2h0PSIyNDAiIHJ4PSI1NiIgZmlsbD0idXJsKCNiZykiLz4KICA8cmVjdCB4PSI0NCIgeT0iNjIiIHdpZHRoPSIxNjgiIGhlaWdodD0iMTEyIiByeD0iMTQiIGZpbGw9IiMxMDFhM2MiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxMiIvPgogIDxwYXRoIGQ9Ik0zMCAxOTYgSDIyNiIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjE0IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8cGF0aCBkPSJNNTggMTIyIEg5MiBMMTA2IDk0IEwxMjYgMTUyIEwxNDIgMTA4IEwxNTIgMTIyIEgxOTgiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzVjZjJhNCIKICAgICAgICBzdHJva2Utd2lkdGg9IjEzIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KPC9zdmc+Cg==" alt="" width="36" height="36"> CrashDoctor</h1>
   <p class="sub">Reads your Windows logs from just before a crash and asks Claude what went wrong.</p>
 
   <div id="setup">
